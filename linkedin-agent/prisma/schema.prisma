@@ -1,0 +1,214 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Core domain for lead gen campaigns and safety
+
+model User {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  email         String   @unique
+  passwordHash  String
+
+  campaigns     Campaign[]
+}
+
+model Campaign {
+  id            String      @id @default(cuid())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  name          String
+  ownerId       String
+  owner         User        @relation(fields: [ownerId], references: [id])
+  status        CampaignStatus @default(DRAFT)
+
+  // Configuration
+  audienceJson  Json        // filters/ICP criteria
+  templates     Template[]
+  sequences     Sequence[]
+  leads         LeadAssignment[]
+  outboundMessages OutboundMessage[]
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id])
+  name        String
+  type        TemplateType
+  content     String   // handlebars-style variables e.g. {{firstName}}
+  enabled     Boolean  @default(true)
+  order       Int?
+
+  // Back-relations
+  sequenceSteps SequenceStep[]
+  messages       OutboundMessage[]
+}
+
+model Sequence {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id])
+  name        String
+  steps       SequenceStep[]
+  assignments LeadAssignment[]
+}
+
+model SequenceStep {
+  id           String        @id @default(cuid())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  sequenceId   String
+  sequence     Sequence      @relation(fields: [sequenceId], references: [id])
+  stepOrder    Int
+  action       StepAction
+  delayHours   Int           @default(24) // delay from previous step
+  templateId   String?
+  template     Template?     @relation(fields: [templateId], references: [id])
+}
+
+model Lead {
+  id            String    @id @default(cuid())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  externalId    String?   // LinkedIn profile ID or URL hash
+  profileUrl    String?
+  firstName     String?
+  lastName      String?
+  headline      String?
+  company       String?
+  title         String?
+  location      String?
+  email         String?
+
+  assignments   LeadAssignment[]
+  interactions  Interaction[]
+  outboundMessages OutboundMessage[]
+}
+
+model LeadAssignment {
+  id            String     @id @default(cuid())
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  leadId        String
+  campaignId    String
+  sequenceId    String?
+
+  lead          Lead       @relation(fields: [leadId], references: [id])
+  campaign      Campaign   @relation(fields: [campaignId], references: [id])
+  sequence      Sequence?  @relation(fields: [sequenceId], references: [id])
+
+  status        AssignmentStatus @default(PENDING)
+  nextRunAt     DateTime?
+  lastStepOrder Int?       // last completed step order
+
+  // Back-relations
+  messages      OutboundMessage[]
+}
+
+model OutboundMessage {
+  id            String     @id @default(cuid())
+  createdAt     DateTime   @default(now())
+  direction     MessageDirection @default(OUTBOUND)
+  provider      ProviderType
+  leadId        String
+  campaignId    String
+  assignmentId  String?
+  templateId    String?
+  stepOrder     Int?
+  content       String
+  sentAt        DateTime?
+  error         String?
+
+  lead          Lead       @relation(fields: [leadId], references: [id])
+  campaign      Campaign   @relation(fields: [campaignId], references: [id])
+  assignment    LeadAssignment? @relation(fields: [assignmentId], references: [id])
+  template      Template?  @relation(fields: [templateId], references: [id])
+}
+
+model Interaction {
+  id            String     @id @default(cuid())
+  createdAt     DateTime   @default(now())
+  provider      ProviderType
+  leadId        String
+  type          InteractionType
+  content       String?
+  occurredAt    DateTime   @default(now())
+
+  lead          Lead       @relation(fields: [leadId], references: [id])
+}
+
+model SafetyCounter {
+  id            String     @id @default(cuid())
+  userId        String
+  date          DateTime
+  provider      ProviderType
+  type          SafetyCounterType
+  count         Int        @default(0)
+
+  @@unique([userId, date, provider, type])
+}
+
+// (no duplicate Campaign definition below)
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum TemplateType {
+  CONNECTION
+  OUTREACH
+  FOLLOW_UP
+  NURTURE
+}
+
+enum StepAction {
+  SEND_CONNECTION
+  SEND_MESSAGE
+  WAIT
+}
+
+enum ProviderType {
+  LINKEDIN
+}
+
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum InteractionType {
+  CONNECTION_ACCEPTED
+  REPLIED
+  PROFILE_VIEWED
+  MESSAGE_SENT
+}
+
+enum AssignmentStatus {
+  PENDING
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  STOPPED
+}
+
+enum SafetyCounterType {
+  CONNECTION_SENT
+  MESSAGE_SENT
+}
