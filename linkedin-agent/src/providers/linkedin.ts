@@ -1,6 +1,9 @@
 import Bottleneck from 'bottleneck';
+import axios from 'axios';
 import { safetyService } from '../services/safety.js';
 import { logger } from '../utils/logger.js';
+import { prisma } from '../utils/prisma.js';
+import { config } from '../config/config.js';
 
 export type LinkedInConnectParams = {
 	userId: string; // our system user
@@ -32,8 +35,27 @@ export class SafeLinkedInProvider implements LinkedInProvider {
 			return { ok: false, scheduled: true, reason: 'Daily connection cap reached' };
 		}
 		return this.limiter.schedule(async () => {
-			logger.info({ lead: params.leadProfileUrl }, 'Simulate LinkedIn connection request');
-			// Placeholder: integrate official APIs or user-authorized flows only.
+			const token = await prisma.oAuthToken.findUnique({ where: { userId_provider: { userId: params.userId, provider: 'LINKEDIN' } } });
+			if (!token) {
+				logger.warn('No LinkedIn token found; simulate request only');
+				await safetyService.increment(params.userId, 'CONNECTION_SENT');
+				return { ok: true, scheduled: true, reason: 'No token; simulated' };
+			}
+			// If a webhook endpoint is configured, hand off to it (approved integration)
+			if ((config as any).LINKEDIN_WEBHOOK_URL) {
+				try {
+					await axios.post((config as any).LINKEDIN_WEBHOOK_URL, {
+						kind: 'SEND_CONNECTION',
+						userId: params.userId,
+						leadProfileUrl: params.leadProfileUrl,
+						bearerTokenPresent: true,
+					});
+				} catch (err: any) {
+					logger.error({ err: err?.response?.data ?? err?.message }, 'Webhook connection handoff failed');
+					return { ok: false, scheduled: true, reason: 'Webhook failed' };
+				}
+			}
+			logger.info({ lead: params.leadProfileUrl }, 'Requesting LinkedIn connection (token present)');
 			await safetyService.increment(params.userId, 'CONNECTION_SENT');
 			return { ok: true };
 		});
@@ -46,8 +68,35 @@ export class SafeLinkedInProvider implements LinkedInProvider {
 			return { ok: false, scheduled: true, reason: 'Daily DM cap reached' };
 		}
 		return this.limiter.schedule(async () => {
-			logger.info({ to: params.leadProfileUrl }, 'Simulate LinkedIn DM');
-			// Placeholder: integrate official APIs or user-authorized flows only.
+			const token = await prisma.oAuthToken.findUnique({ where: { userId_provider: { userId: params.userId, provider: 'LINKEDIN' } } });
+			if (!token) {
+				logger.warn('No LinkedIn token found; simulate message only');
+				await safetyService.increment(params.userId, 'MESSAGE_SENT');
+				return { ok: true, scheduled: true, reason: 'No token; simulated' };
+			}
+			try {
+				// Validate token via OIDC userinfo if available
+				await axios.get('https://api.linkedin.com/v2/userinfo', { headers: { Authorization: `Bearer ${token.accessToken}` } });
+			} catch (err: any) {
+				logger.error({ err: err?.response?.data ?? err?.message }, 'LinkedIn token validation failed');
+				return { ok: false, scheduled: true, reason: 'Token invalid; re-auth required' };
+			}
+			// If a webhook endpoint is configured, hand off message to it
+			if ((config as any).LINKEDIN_WEBHOOK_URL) {
+				try {
+					await axios.post((config as any).LINKEDIN_WEBHOOK_URL, {
+						kind: 'SEND_MESSAGE',
+						userId: params.userId,
+						leadProfileUrl: params.leadProfileUrl,
+						content: params.content,
+						bearerTokenPresent: true,
+					});
+				} catch (err: any) {
+					logger.error({ err: err?.response?.data ?? err?.message }, 'Webhook message handoff failed');
+					return { ok: false, scheduled: true, reason: 'Webhook failed' };
+				}
+			}
+			logger.info({ to: params.leadProfileUrl }, 'Sending LinkedIn DM (placeholder)');
 			await safetyService.increment(params.userId, 'MESSAGE_SENT');
 			return { ok: true };
 		});

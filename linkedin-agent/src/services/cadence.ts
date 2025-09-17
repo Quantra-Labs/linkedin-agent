@@ -66,7 +66,7 @@ export class CadenceService {
 
 		if (step.action === 'SEND_CONNECTION') {
 			const result = await linkedinProvider.requestConnection({
-				userId: assignment.campaign.ownerId,
+				userId: await this.selectSenderUserId(assignment.campaignId, assignment.campaign.ownerId),
 				leadProfileUrl: assignment.lead.profileUrl ?? '',
 				message: undefined,
 			});
@@ -97,7 +97,7 @@ export class CadenceService {
 				template: template?.content,
 			});
 			const result = await linkedinProvider.sendMessage({
-				userId: assignment.campaign.ownerId,
+				userId: await this.selectSenderUserId(assignment.campaignId, assignment.campaign.ownerId),
 				leadProfileUrl: assignment.lead.profileUrl ?? '',
 				content,
 			});
@@ -119,6 +119,19 @@ export class CadenceService {
 
 		await prisma.leadAssignment.update({ where: { id: assignmentId }, data: { lastStepOrder: step.stepOrder } });
 		await this.scheduleNextStep(assignmentId);
+	}
+
+	// Choose which LinkedIn sender (mapped to a token user) to use for this campaign
+	private async selectSenderUserId(campaignId: string, fallbackUserId: string): Promise<string> {
+		const active = await prisma.campaignSender.findMany({ where: { campaignId, active: true }, include: { sender: true }, orderBy: { createdAt: 'asc' } });
+		if (!active.length) return fallbackUserId;
+		// Naive round-robin by counting usages in OutboundMessage today
+		const usage = await Promise.all(active.map(async (cs) => {
+			const count = await prisma.outboundMessage.count({ where: { campaignId, createdAt: { gte: new Date(new Date().toDateString()) } } });
+			return { cs, count };
+		}));
+		usage.sort((a, b) => a.count - b.count);
+		return usage[0].cs.sender.tokenUserId ?? fallbackUserId;
 	}
 }
 

@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkedIn Agent MVP</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; padding: 16px; background: #0f172a; color: #e2e8f0; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  h1 { font-size: 18px; margin: 0; }
+  .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:16px; margin-bottom:16px; }
+  input, select, textarea, button { background:#0b1220; color:#e2e8f0; border:1px solid #1f2937; border-radius:8px; padding:8px 10px; }
+  button { cursor:pointer; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .list { max-height:200px; overflow:auto; border:1px solid #1f2937; border-radius:8px; padding:8px; background:#0b1220; }
+  code { background:#0b1220; padding:2px 6px; border-radius:6px; }
+  small { color:#94a3b8; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>LinkedIn Agent MVP</h1>
+    <div><small id="status">Checking...</small></div>
+  </header>
+
+  <div class="card">
+    <h3>1) Connect LinkedIn</h3>
+    <div class="row">
+      <label>User ID <input id="userId" value="demo-user" /></label>
+      <button id="btnAuth">Start OAuth</button>
+      <button id="btnStatus">Check Status</button>
+      <span id="authResult"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>2) Campaign & Sequence</h3>
+    <div class="row">
+      <input id="campaignName" placeholder="Campaign name" value="My Campaign" />
+      <button id="btnCreateCampaign">Create Campaign</button>
+      <select id="campaignSelect"></select>
+      <button id="btnRefreshCampaigns">Refresh</button>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <input id="sequenceId" placeholder="Sequence ID (optional)" style="min-width:280px;" />
+      <button id="btnCreateSequence">Create 2-Step Sequence</button>
+      <small>Creates: SEND_CONNECTION (0h) -> SEND_MESSAGE (1h) with template.</small>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>3) Import profile URLs</h3>
+    <textarea id="urls" rows="6" style="width:100%;" placeholder="One LinkedIn profile URL per line..."></textarea>
+    <div class="row" style="margin-top:8px;">
+      <button id="btnImport">Import & Assign</button>
+      <input type="file" id="csvFile" accept=".csv" />
+      <button id="btnImportCsv">Import CSV</button>
+      <button id="btnRun">Run Scheduler</button>
+      <a id="exportLeads" href="#" target="_blank">Export Leads CSV</a>
+      <a id="exportMsgs" href="#" target="_blank">Export Messages CSV</a>
+      <span id="importResult"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>4) Messages</h3>
+    <div class="row">
+      <button id="btnRefreshMsgs">Refresh</button>
+    </div>
+    <div id="messages" class="list"></div>
+  </div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const api = async (url, opts={}) => {
+  const res = await fetch(url, { headers: { 'Content-Type':'application/json' }, ...opts });
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return text; }
+};
+
+async function init() {
+  $('#status').textContent = 'Server ready';
+  await refreshCampaigns();
+}
+
+$('#btnAuth').onclick = async () => {
+  const userId = $('#userId').value.trim();
+  window.location.href = `/auth/linkedin/start?userId=${encodeURIComponent(userId)}`;
+};
+
+$('#btnStatus').onclick = async () => {
+  const userId = $('#userId').value.trim();
+  const data = await api(`/auth/linkedin/status?userId=${encodeURIComponent(userId)}`);
+  $('#authResult').textContent = JSON.stringify(data);
+};
+
+$('#btnCreateCampaign').onclick = async () => {
+  const ownerId = $('#userId').value.trim();
+  const name = $('#campaignName').value.trim();
+  const campaign = await api('/campaigns', { method:'POST', body: JSON.stringify({ ownerId, name, audienceJson: {} }) });
+  await refreshCampaigns();
+  $('#campaignSelect').value = campaign.id;
+};
+
+async function refreshCampaigns() {
+  const ownerId = $('#userId').value.trim();
+  const list = await api(`/campaigns?ownerId=${encodeURIComponent(ownerId)}`);
+  const sel = $('#campaignSelect');
+  sel.innerHTML = '';
+  if (Array.isArray(list)) {
+    for (const c of list) {
+      const opt = document.createElement('option');
+      opt.value = c.id; opt.textContent = `${c.name} • ${c.id}`; sel.appendChild(opt);
+    }
+  }
+}
+
+$('#btnImport').onclick = async () => {
+  const campaignId = $('#campaignSelect').value.trim();
+  const sequenceId = $('#sequenceId').value.trim() || undefined;
+  const urls = $('#urls').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (!campaignId || urls.length === 0) { $('#importResult').textContent = 'Select campaign and paste URLs.'; return; }
+  const resp = await api('/leads/import/urls', { method:'POST', body: JSON.stringify({ campaignId, sequenceId, urls }) });
+  $('#importResult').textContent = JSON.stringify(resp);
+  updateExportLinks();
+};
+
+$('#btnRun').onclick = async () => {
+  await api('/scheduler/run', { method:'POST', body: '{}' });
+  await refreshMessages();
+};
+
+$('#btnRefreshMsgs').onclick = refreshMessages;
+
+$('#btnCreateSequence').onclick = async () => {
+  const campaignId = $('#campaignSelect').value.trim();
+  const name = 'Auto 2-step';
+  const steps = [
+    { stepOrder: 1, action: 'SEND_CONNECTION', delayHours: 0 },
+    { stepOrder: 2, action: 'SEND_MESSAGE', delayHours: 1, templateContent: 'Hi {{firstName}}, great to connect!' }
+  ];
+  if (!campaignId) return alert('Select a campaign first.');
+  const seq = await api('/sequences', { method:'POST', body: JSON.stringify({ campaignId, name, steps }) });
+  $('#sequenceId').value = seq.id;
+};
+
+async function refreshMessages() {
+  const campaignId = $('#campaignSelect').value.trim();
+  const msgs = await api(`/messages${campaignId ? ('?campaignId=' + encodeURIComponent(campaignId)) : ''}`);
+  const box = $('#messages');
+  if (!Array.isArray(msgs)) { box.textContent = JSON.stringify(msgs); return; }
+  box.innerHTML = msgs.map(m => `<div><code>${m.createdAt}</code> • ${m.provider} • ${m.direction} • ${m.content ?? ''}</div>`).join('');
+}
+
+function updateExportLinks() {
+  const campaignId = $('#campaignSelect').value.trim();
+  $('#exportLeads').href = `/leads/export.csv?campaignId=${encodeURIComponent(campaignId)}`;
+  $('#exportMsgs').href = `/messages/export.csv?campaignId=${encodeURIComponent(campaignId)}`;
+}
+
+$('#campaignSelect').onchange = updateExportLinks;
+
+$('#btnImportCsv').onclick = async () => {
+  const file = $('#csvFile').files[0];
+  if (!file) return alert('Choose a CSV file');
+  const text = await file.text();
+  // naive CSV: assume first column contains profile URLs with header 'profileUrl' or no header
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  let urls = [];
+  if (lines[0].toLowerCase().includes('profileurl')) {
+    urls = lines.slice(1).map(l => l.split(',')[0]).filter(Boolean);
+  } else {
+    urls = lines.map(l => l.split(',')[0]).filter(Boolean);
+  }
+  $('#urls').value = urls.join('\n');
+};
+
+init();
+</script>
+</body>
+</html>

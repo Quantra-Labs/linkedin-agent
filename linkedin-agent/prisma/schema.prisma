@@ -20,6 +20,8 @@ model User {
   passwordHash  String
 
   campaigns     Campaign[]
+  // Back-relations
+  senders       Sender[]
 }
 
 model Campaign {
@@ -37,6 +39,9 @@ model Campaign {
   sequences     Sequence[]
   leads         LeadAssignment[]
   outboundMessages OutboundMessage[]
+  // Back-relations
+  campaignSenders CampaignSender[]
+  inboundMessages InboundMessage[]
 }
 
 model Template {
@@ -97,6 +102,8 @@ model Lead {
   assignments   LeadAssignment[]
   interactions  Interaction[]
   outboundMessages OutboundMessage[]
+  // Back-relations
+  inboundMessages InboundMessage[]
 }
 
 model LeadAssignment {
@@ -160,6 +167,61 @@ model SafetyCounter {
   count         Int        @default(0)
 
   @@unique([userId, date, provider, type])
+}
+
+model OAuthToken {
+  id           String       @id @default(cuid())
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  userId       String
+  provider     ProviderType
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+  scope        String?
+
+  @@unique([userId, provider])
+}
+
+// Multi-sender support
+model Sender {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id])
+  name         String
+  // The userId whose OAuth token should be used for this sender (can be same as ownerId)
+  tokenUserId  String?
+
+  campaigns    CampaignSender[]
+}
+
+model CampaignSender {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  campaignId  String
+  senderId    String
+  active      Boolean  @default(true)
+
+  campaign    Campaign @relation(fields: [campaignId], references: [id])
+  sender      Sender   @relation(fields: [senderId], references: [id])
+
+  @@unique([campaignId, senderId])
+}
+
+// Optional: capture inbound messages for an inbox view
+model InboundMessage {
+  id         String     @id @default(cuid())
+  createdAt  DateTime   @default(now())
+  provider   ProviderType
+  leadId     String
+  campaignId String
+  content    String
+
+  lead       Lead       @relation(fields: [leadId], references: [id])
+  campaign   Campaign   @relation(fields: [campaignId], references: [id])
 }
 
 // (no duplicate Campaign definition below)
